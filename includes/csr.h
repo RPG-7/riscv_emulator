@@ -78,6 +78,21 @@
 #define MSCRATCH    0x340 // MRW Scratch register for machine trap handlers.
 #define MEPC        0x341 // MRW Machine exception program counter.
 #define MCAUSE      0x342 // MRW Machine trap cause.
+#define EXC_INST_ADDR_MISALIGN 0x0000
+#define EXC_INST_ACCESS_FLT    0x0001
+#define EXC_INST_ILLEGAL       0x0002
+#define EXC_INST_BREAKPOINT    0x0003
+#define EXC_LOAD_ADDR_MISALIGN 0x0004
+#define EXC_LOAD_ACCESS_FLT    0x0005
+#define EXC_STOR_ADDR_MISALIGN 0x0006
+#define EXC_STOR_ACCESS_FLT    0x0007
+#define EXC_ENV_CALL_UMODE     0x0008
+#define EXC_ENV_CALL_SMODE     0x0009
+#define EXC_ENV_CALL_MMODE     0x000B
+#define EXC_INST_PAGE_FLT      0x000C
+#define EXC_LOAD_PAGE_FLT      0x000D
+#define EXC_STOR_PAGE_FLT      0x000F
+
 #define MTVAL       0x343 // MRW Machine bad address or instruction.
 #define MIP         0x344 // MRW Machine interrupt pending.
 

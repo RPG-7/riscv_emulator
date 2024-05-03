@@ -12,6 +12,10 @@
 #define ADDR_MISALIGNED(addr) (addr & 0x3)
 
 
+void cpu_chk_int_exc(CPU *cpu)
+{
+    
+}
 // print operation for DEBUG
 void print_op(char* s) {
     printf("%s%s%s", ANSI_BLUE, s, ANSI_RESET);
@@ -19,22 +23,29 @@ void print_op(char* s) {
 
 void cpu_init(CPU *cpu) {
     cpu->regs[0] = 0x00;                    // register x0 hardwired to 0
+    cpu->cpu_status=0x03;                   // Start @M state
     cpu->regs[2] = DRAM_BASE + DRAM_SIZE;   // Set stack pointer
     cpu->pc      = DRAM_BASE;               // Set program counter to the base address
 }
+//TODO generally exceptions shall be raised into according xCAUSE register
+void gen_exception(CPU* cpu,uint32_t exc_code){
+    cpu->csr[MCAUSE]=exc_code;
 
+}
 uint32_t cpu_fetch(CPU *cpu) {
     uint32_t inst = bus_load(&(cpu->bus), cpu->pc, 32);
     return inst;
 }
 
-uint64_t cpu_load(CPU* cpu, uint64_t addr, uint64_t size) {
-    return bus_load(&(cpu->bus), addr, size);
+uint64_t cpu_load(CPU* cpu, uint64_t addr, uint8_t size) {
+        return bus_load(&(cpu->bus), addr, size);
 }
 
 void cpu_store(CPU* cpu, uint64_t addr, uint64_t size, uint64_t value) {
     bus_store(&(cpu->bus), addr, size, value);
 }
+
+
 
 //=====================================================================================
 // Instruction Decoder Functions
@@ -78,13 +89,13 @@ uint64_t imm_J(uint32_t inst) {
         | ((inst >> 20) & 0x7fe); // imm[10:1]
 }
 
-uint32_t shamt(uint32_t inst) {
+uint16_t shamt(uint32_t inst) {
     // shamt(shift amount) only required for immediate shift instructions
     // shamt[4:5] = imm[5:0]
     return (uint32_t) (imm_I(inst) & 0x1f); // TODO: 0x1f / 0x3f ?
 }
 
-uint64_t csr(uint32_t inst) {
+uint16_t csr(uint32_t inst) {
     // csr[11:0] = inst[31:20]
     return ((inst & 0xfff00000) >> 20);
 }
@@ -111,11 +122,12 @@ void exec_JAL(CPU* cpu, uint32_t inst) {
     uint64_t imm = imm_J(inst);
     cpu->regs[rd(inst)] = cpu->pc;
     /*print_op("JAL-> rd:%ld, pc:%lx\n", rd(inst), cpu->pc);*/
-    cpu->pc = cpu->pc + (int64_t) imm - 4;
+    cpu->pc = cpu->pc + (int64_t) imm;
+    SET_JUMP_FLAG(cpu->cpu_status);
+    
     print_op("jal\n");
     if (ADDR_MISALIGNED(cpu->pc)) {
-        fprintf(stderr, "JAL pc address misalligned");
-        exit(0);
+        gen_exception(cpu,EXC_INST_ADDR_MISALIGN);
     }
 }
 
@@ -127,8 +139,7 @@ void exec_JALR(CPU* cpu, uint32_t inst) {
     /*print_op("NEXT -> %#lx, imm:%#lx\n", cpu->pc, imm);*/
     print_op("jalr\n");
     if (ADDR_MISALIGNED(cpu->pc)) {
-        fprintf(stderr, "JAL pc address misalligned");
-        exit(0);
+        gen_exception(cpu,EXC_INST_ADDR_MISALIGN);
     }
 }
 
@@ -169,6 +180,64 @@ void exec_BGEU(CPU* cpu, uint32_t inst) {
         cpu->pc = (int64_t) cpu->pc + (int64_t) imm - 4;
     print_op("jal\n");
 }
+void exec_Load(CPU* cpu, uint32_t inst,uint8_t funct3){
+    uint64_t imm = imm_I(inst);
+    uint64_t addr_mask=(1<<(funct3&0x03))-1;
+    uint64_t addr = cpu->regs[rs1(inst)] + (int64_t) imm;
+    if((addr & addr_mask)!=0)
+        gen_exception(cpu,EXC_LOAD_ADDR_MISALIGN);
+    else
+        switch (funct3) {
+            case LB  :  
+                cpu->regs[rd(inst)] = (int64_t)(int8_t) cpu_load(cpu, addr, 8);
+                print_op("lb\n");
+                break;  
+            case LH  :    
+                cpu->regs[rd(inst)] = (int64_t)(int16_t) cpu_load(cpu, addr, 16);
+                print_op("lh\n");
+            break;  
+            case LW  :  
+                cpu->regs[rd(inst)] = (int64_t)(int32_t) cpu_load(cpu, addr, 32);
+                print_op("lw\n");
+            break;  
+            case LD  :
+                cpu->regs[rd(inst)] = (int64_t) cpu_load(cpu, addr, 64);
+                print_op("ld\n");
+            break;  
+            case LBU  :  
+                cpu->regs[rd(inst)] = cpu_load(cpu, addr, 8);
+                print_op("lbu\n");
+                break;  
+            case LHU  :    
+                cpu->regs[rd(inst)] =  cpu_load(cpu, addr, 16);
+                print_op("lhu\n");
+            break;  
+            case LWU  :  
+                cpu->regs[rd(inst)] =  cpu_load(cpu, addr, 32);
+                print_op("lwu\n");
+            break;  
+            default: 
+                gen_exception(cpu,EXC_INST_ILLEGAL);
+            break;
+        }
+}
+void exec_Store(CPU* cpu, uint32_t inst,uint8_t funct3) {
+    uint64_t imm = imm_S(inst);
+    uint64_t addr = cpu->regs[rs1(inst)] + (int64_t) imm;
+    uint64_t addr_mask=(1<<(funct3&0x03))-1;
+    if(funct3 & 0x4){
+        gen_exception(cpu,EXC_INST_ILLEGAL);
+    }
+    else{
+        if((addr & addr_mask)!=0)
+            gen_exception(cpu,EXC_STOR_ADDR_MISALIGN);
+        else
+            cpu_store(cpu, addr, 8<<funct3, cpu->regs[rs2(inst)]);
+        print_op("Store!");
+
+    }
+}
+/*
 void exec_LB(CPU* cpu, uint32_t inst) {
     // load 1 byte to rd from address in rs1
     uint64_t imm = imm_I(inst);
@@ -241,7 +310,7 @@ void exec_SD(CPU* cpu, uint32_t inst) {
     uint64_t addr = cpu->regs[rs1(inst)] + (int64_t) imm;
     cpu_store(cpu, addr, 64, cpu->regs[rs2(inst)]);
     print_op("sd\n");
-}
+}*/
 
 void exec_ADDI(CPU* cpu, uint32_t inst) {
     uint64_t imm = imm_I(inst);
@@ -353,8 +422,27 @@ void exec_FENCE(CPU* cpu, uint32_t inst) {
     print_op("fence\n");
 }
 
-void exec_ECALL(CPU* cpu, uint32_t inst) {}
-void exec_EBREAK(CPU* cpu, uint32_t inst) {}
+void exec_ECALL(CPU* cpu, uint32_t inst) {
+    switch(GET_CURR_PRIV(cpu->cpu_status)){
+        case PRIV_LVL_M:
+            gen_exception(cpu,EXC_ENV_CALL_MMODE);
+        break;
+        case PRIV_LVL_U:
+            gen_exception(cpu,EXC_ENV_CALL_UMODE);
+        break;
+        case PRIV_LVL_S:
+            gen_exception(cpu,EXC_ENV_CALL_SMODE);
+        break;
+        default:
+            fprintf(stderr, 
+            "[-] ERROR-> Enter reserved privilege level!!!\n");
+            exit(-1);
+        break;
+    }
+}
+void exec_EBREAK(CPU* cpu, uint32_t inst) {
+    printf("TBI:Invoke debugger");
+}
 
 void exec_ECALLBREAK(CPU* cpu, uint32_t inst) {
     if (imm_I(inst) == 0x0)
@@ -371,7 +459,7 @@ void exec_ADDIW(CPU* cpu, uint32_t inst) {
     print_op("addiw\n");
 }
 
-// TODO
+// TODO what?
 void exec_SLLIW(CPU* cpu, uint32_t inst) {
     cpu->regs[rd(inst)] = (int64_t)(int32_t) (cpu->regs[rs1(inst)] <<  shamt(inst));
     print_op("slliw\n");
@@ -495,7 +583,7 @@ void exec_AMOMAX_W(CPU* cpu, uint32_t inst) {}
 void exec_AMOMINU_W(CPU* cpu, uint32_t inst) {} 
 void exec_AMOMAXU_W(CPU* cpu, uint32_t inst) {} 
 
-// AMO_D TODO
+// TODO AMO_D 
 void exec_LR_D(CPU* cpu, uint32_t inst) {}  
 void exec_SC_D(CPU* cpu, uint32_t inst) {}  
 void exec_AMOSWAP_D(CPU* cpu, uint32_t inst) {}  
@@ -537,10 +625,8 @@ int cpu_execute(CPU *cpu, uint32_t inst) {
     int funct3 = (inst >> 12) & 0x7;    // funct3 in bits 14..12
     int funct7 = (inst >> 25) & 0x7f;   // funct7 in bits 31..25
 
-    cpu->regs[0] = 0;                   // x0 hardwired to 0 at each cycle
+    //cpu->regs[0] = 0;                   // x0 hardwired to 0 at each cycle
 
-    /*printf("%s\n%#.8lx -> Inst: %#.8x <OpCode: %#.2x, funct3:%#x, funct7:%#x> %s",*/
-            /*ANSI_YELLOW, cpu->pc-4, inst, opcode, funct3, funct7, ANSI_RESET); // DEBUG*/
     printf("%s\n%#.8lx -> %s", ANSI_YELLOW, cpu->pc-4, ANSI_RESET); // DEBUG
 
     switch (opcode) {
@@ -562,18 +648,15 @@ int cpu_execute(CPU *cpu, uint32_t inst) {
             } break;
 
         case LOAD:
-            switch (funct3) {
-                case LB  :  exec_LB(cpu, inst); break;  
-                case LH  :  exec_LH(cpu, inst); break;  
-                case LW  :  exec_LW(cpu, inst); break;  
-                case LD  :  exec_LD(cpu, inst); break;  
-                case LBU :  exec_LBU(cpu, inst); break; 
-                case LHU :  exec_LHU(cpu, inst); break; 
-                case LWU :  exec_LWU(cpu, inst); break; 
-                default: ;
-            } break;
+            if(rd(inst)!=0)
+                exec_Load(cpu,inst,funct3);
+            break;
 
         case S_TYPE:
+            if(rd(inst)!=0)
+                exec_Store(cpu,inst,funct3);
+            break;
+            /*
             switch (funct3) {
                 case SB  :  exec_SB(cpu, inst); break;  
                 case SH  :  exec_SH(cpu, inst); break;  
@@ -581,8 +664,11 @@ int cpu_execute(CPU *cpu, uint32_t inst) {
                 case SD  :  exec_SD(cpu, inst); break;  
                 default: ;
             } break;
+            */
 
         case I_TYPE:  
+            if(rd(inst)==0)
+                break;
             switch (funct3) {
                 case ADDI:  exec_ADDI(cpu, inst); break;
                 case SLLI:  exec_SLLI(cpu, inst); break;
@@ -598,18 +684,17 @@ int cpu_execute(CPU *cpu, uint32_t inst) {
                 case ORI:   exec_ORI(cpu, inst); break;
                 case ANDI:  exec_ANDI(cpu, inst); break;
                 default:
-                    fprintf(stderr, 
-                            "[-] ERROR-> opcode:0x%x, funct3:0x%x, funct7:0x%x\n"
-                            , opcode, funct3, funct7);
-                    return 0;
+                    gen_exception(cpu,EXC_INST_ILLEGAL);
             } break;
 
         case R_TYPE:  
+            if(rd(inst)==0)
+                break;
             switch (funct3) {
                 case ADDSUB:
                     switch (funct7) {
                         case ADD: exec_ADD(cpu, inst);
-                        case SUB: exec_ADD(cpu, inst);
+                        case SUB: exec_SUB(cpu, inst);
                         default: ;
                     } break;
                 case SLL:  exec_SLL(cpu, inst); break;
@@ -625,15 +710,14 @@ int cpu_execute(CPU *cpu, uint32_t inst) {
                 case OR:   exec_OR(cpu, inst); break;
                 case AND:  exec_AND(cpu, inst); break;
                 default:
-                    fprintf(stderr, 
-                            "[-] ERROR-> opcode:0x%x, funct3:0x%x, funct7:0x%x\n"
-                            , opcode, funct3, funct7);
-                    return 0;
+                    gen_exception(cpu,EXC_INST_ILLEGAL);
             } break;
 
         case FENCE: exec_FENCE(cpu, inst); break;
 
         case I_TYPE_64:
+            if(rd(inst)==0)
+                break;
             switch (funct3) {
                 case ADDIW: exec_ADDIW(cpu, inst); break;
                 case SLLIW: exec_SLLIW(cpu, inst); break;
@@ -645,6 +729,8 @@ int cpu_execute(CPU *cpu, uint32_t inst) {
             } break;
 
         case R_TYPE_64:
+            if(rd(inst)==0)
+                break;
             switch (funct3) {
                 case ADDSUB:
                     switch (funct7) {
@@ -675,10 +761,7 @@ int cpu_execute(CPU *cpu, uint32_t inst) {
                 case CSRRSI :  exec_CSRRSI(cpu, inst); break; 
                 case CSRRCI :  exec_CSRRCI(cpu, inst); break; 
                 default:
-                    fprintf(stderr, 
-                            "[-] ERROR-> opcode:0x%x, funct3:0x%x, funct7:0x%x\n"
-                            , opcode, funct3, funct7);
-                    return 0;
+                    gen_exception(cpu,EXC_INST_ILLEGAL);
             } break;
 
         case AMO_W:
@@ -695,21 +778,14 @@ int cpu_execute(CPU *cpu, uint32_t inst) {
                 case AMOMINU_W :  exec_AMOMINU_W(cpu, inst); break; 
                 case AMOMAXU_W :  exec_AMOMAXU_W(cpu, inst); break; 
                 default:
-                    fprintf(stderr, 
-                            "[-] ERROR-> opcode:0x%x, funct3:0x%x, funct7:0x%x\n"
-                            , opcode, funct3, funct7);
-                    return 0;
+                    gen_exception(cpu,EXC_INST_ILLEGAL);
             } break;
 
-        case 0x00:
-            return 0;
+        //case 0x00:
+        //    return 0;
 
         default:
-            fprintf(stderr, 
-                    "[-] ERROR-> opcode:0x%x, funct3:0x%x, funct3:0x%x\n"
-                    , opcode, funct3, funct7);
-            return 0;
-            /*exit(1);*/
+                gen_exception(cpu,EXC_INST_ILLEGAL);
     }
     return 1;
 }
